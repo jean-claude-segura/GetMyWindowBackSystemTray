@@ -23,6 +23,26 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v3
 
+      - name: Build Release x86
+        run: >
+          msbuild "GetMyWindowBackSystemTray.slnx"
+          /m
+          /p:Configuration=Release
+          /p:Platform=x86
+
+      - name: Rename x86 executable
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter GetMyWindowBackSystemTray.exe |
+            Where-Object { $_.FullName -match '\\Win32\\Release\\' } |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            throw "x86 executable not found"
+          }
+
+          Copy-Item $exe.FullName "GetMyWindowBackSystemTray-x86.exe"
+
       - name: Build Release x64
         run: >
           msbuild "GetMyWindowBackSystemTray.slnx"
@@ -30,16 +50,33 @@ jobs:
           /p:Configuration=Release
           /p:Platform=x64
 
-      - name: Upload build artifact
+      - name: Rename x64 executable
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter GetMyWindowBackSystemTray.exe |
+            Where-Object { $_.FullName -match '\\x64\\Release\\' } |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            throw "x64 executable not found"
+          }
+
+          Copy-Item $exe.FullName "GetMyWindowBackSystemTray-x64.exe"
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: GetMyWindowBackSystemTray-Release-x64
-          path: "**/GetMyWindowBackSystemTray.exe"
+          name: GetMyWindowBackSystemTray-Release
+          path: |
+            GetMyWindowBackSystemTray-x86.exe
+            GetMyWindowBackSystemTray-x64.exe
           if-no-files-found: error
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: "**/GetMyWindowBackSystemTray.exe"
+          files: |
+            GetMyWindowBackSystemTray-x86.exe
+            GetMyWindowBackSystemTray-x64.exe
           generate_release_notes: true
