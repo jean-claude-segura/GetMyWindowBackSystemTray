@@ -22,6 +22,7 @@ struct AppWindow {
 // Shared state for the notification area icon and the windows discovered during enumeration.
 NOTIFYICONDATA g_nid = { 0 };
 std::vector<AppWindow> g_detectedApps;
+HINSTANCE g_hInstance = NULL;
 
 // Handles initialization, hyperlink activation, and dismissal of the About dialog.
 INT_PTR CALLBACK AboutDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -32,7 +33,9 @@ INT_PTR CALLBACK AboutDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 		RECT rcDialog, rcScreen;
 
 		// Obtain the dialog dimensions after Windows has created its controls.
-		GetWindowRect(hDlg, &rcDialog);
+		if (!GetWindowRect(hDlg, &rcDialog))
+			return (INT_PTR)TRUE;
+
 		int width = rcDialog.right - rcDialog.left;
 		int height = rcDialog.bottom - rcDialog.top;
 
@@ -41,7 +44,7 @@ INT_PTR CALLBACK AboutDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 		MONITORINFO mi = { sizeof(MONITORINFO) };
 
 		if (GetMonitorInfoW(hPrimaryMonitor, &mi)) {
-			rcScreen = mi.rcWork; // rcWork ensures the dialog does not overlap the taskbar.	
+			rcScreen = mi.rcWork; // rcWork ensures the dialog does not overlap the taskbar.
 		}
 		else {
 			// Fall back to the primary screen dimensions if monitor information
@@ -66,13 +69,24 @@ INT_PTR CALLBACK AboutDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 
 	case WM_NOTIFY: {
 		// SysLink controls report hyperlink activation through WM_NOTIFY.
-		LPNMHDR pNmhdr = (LPNMHDR)lParam;
+		LPNMHDR pNmhdr = reinterpret_cast<LPNMHDR>(lParam);
 
-		if (pNmhdr->code == NM_CLICK || pNmhdr->code == NM_RETURN) {
-			PNMLINK pNmlink = (PNMLINK)lParam;
+		if (pNmhdr == NULL)
+			break;
+
+		// Only process activation notifications from the expected hyperlink controls.
+		if ((pNmhdr->idFrom == IDC_LINK_GITHUB || pNmhdr->idFrom == IDC_LINK_ICON) &&
+			(pNmhdr->code == NM_CLICK || pNmhdr->code == NM_RETURN)) {
+			PNMLINK pNmlink = reinterpret_cast<PNMLINK>(lParam);
 
 			// Delegate URL handling to the Windows shell and the user's default browser.
-			ShellExecuteW(NULL, L"open", pNmlink->item.szUrl, NULL, NULL, SW_SHOWNORMAL);
+			HINSTANCE result = ShellExecuteW(NULL, L"open", pNmlink->item.szUrl, NULL, NULL, SW_SHOWNORMAL);
+
+			// ShellExecuteW returns a value greater than 32 on success.
+			if (reinterpret_cast<INT_PTR>(result) <= 32) {
+				MessageBoxW(hDlg, L"Unable to open the requested link.", L"Link Error", MB_OK | MB_ICONWARNING);
+			}
+
 			return (INT_PTR)TRUE;
 		}
 		break;
@@ -135,7 +149,12 @@ void RapatrierSurEcranPrincipal(HWND targetHwnd) {
 	HMONITOR hPrimaryMonitor = MonitorFromWindow(NULL, MONITOR_DEFAULTTOPRIMARY);
 	MONITORINFO mi = { sizeof(MONITORINFO) };
 
-	if (GetMonitorInfo(hPrimaryMonitor, &mi)) {
+	if (GetMonitorInfoW(hPrimaryMonitor, &mi)) {
+		// Restore minimized or maximized windows before measuring their dimensions.
+		if (IsZoomed(targetHwnd) || IsIconic(targetHwnd)) {
+			ShowWindow(targetHwnd, SW_RESTORE);
+		}
+
 		RECT winRect;
 
 		if (GetWindowRect(targetHwnd, &winRect)) {
@@ -145,11 +164,6 @@ void RapatrierSurEcranPrincipal(HWND targetHwnd) {
 			// Place the window at the top-left corner of the usable desktop area.
 			int newX = mi.rcWork.left;
 			int newY = mi.rcWork.top;
-
-			// Restore minimized or maximized windows before applying the new position.
-			if (IsZoomed(targetHwnd) || IsIconic(targetHwnd)) {
-				ShowWindow(targetHwnd, SW_RESTORE);
-			}
 
 			SetWindowPos(targetHwnd, HWND_TOP, newX, newY, width, height, SWP_SHOWWINDOW);
 
@@ -184,16 +198,24 @@ bool EstAuDemarrage() {
 void DefinirDemarrage(bool activer) {
 	HKEY hKey;
 
-	LONG lRes = RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, &hKey);
+	LONG lRes = RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &hKey);
 
 	if (lRes == ERROR_SUCCESS) {
 		if (activer) {
 			wchar_t szPath[MAX_PATH];
 
-			// Register the executable's absolute path rather than a working-directory-relative path.
-			GetModuleFileNameW(NULL, szPath, MAX_PATH);
+			// Retrieve the executable path and reject truncated results.
+			DWORD length = GetModuleFileNameW(NULL, szPath, MAX_PATH);
 
-			RegSetValueExW(hKey, L"GetMyWindowBack", 0, REG_SZ, (BYTE*)szPath, (DWORD)((wcslen(szPath) + 1) * sizeof(wchar_t)));
+			if (length == 0 || length >= MAX_PATH) {
+				RegCloseKey(hKey);
+				return;
+			}
+
+			// Quote the executable path so that spaces in directory names are handled correctly.
+			std::wstring quotedPath = L"\"" + std::wstring(szPath) + L"\"";
+
+			RegSetValueExW(hKey, L"GetMyWindowBack", 0, REG_SZ, reinterpret_cast<const BYTE*>(quotedPath.c_str()), static_cast<DWORD>((quotedPath.size() + 1) * sizeof(wchar_t)));
 		}
 		else {
 			// Removing the value disables automatic launch without affecting other startup entries.
@@ -217,6 +239,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			EnumWindows(EnumWindowsProc, 0);
 
 			HMENU hMenu = CreatePopupMenu();
+
+			if (hMenu == NULL)
+				break;
 
 			for (size_t i = 0; i < g_detectedApps.size(); ++i) {
 				// Include both process and window names to help identify the correct target.
@@ -248,6 +273,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 			HMENU hMenu = CreatePopupMenu();
 
+			if (hMenu == NULL)
+				break;
+
 			// Reflect the current startup configuration in the menu's check mark.
 			UINT flags = MF_STRING;
 
@@ -274,7 +302,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 		if (wmId == ID_TRAY_EXIT) {
 			// Remove the notification icon before terminating the message loop.
-			Shell_NotifyIcon(NIM_DELETE, &g_nid);
+			Shell_NotifyIconW(NIM_DELETE, &g_nid);
 			PostQuitMessage(0);
 		}
 		else if (wmId == ID_TRAY_STARTUP) {
@@ -284,7 +312,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 		}
 		else if (wmId == ID_TRAY_ABOUT) {
 			// Open the modal About dialog using the application's compiled resources.
-			const auto result = DialogBoxW(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_ABOUT_DIALOG), hwnd, AboutDlgProc);
+			const auto result = DialogBoxW(g_hInstance, MAKEINTRESOURCEW(IDD_ABOUT_DIALOG), hwnd, AboutDlgProc);
 
 			// DialogBoxW returns -1 if creation fails; inspect the Win32 error for diagnostics.
 			if (result == -1) {
@@ -293,13 +321,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 				swprintf_s(
 					diagnostic,
-					L"Erreur Win32 fatale !\n\n"
-					L"La bo\u00EEte de dialogue n'a pas pu s'ouvrir.\n"
-					L"Code d'erreur renvoy\u00E9 par Windows : %lu",
+					L"The About dialog could not be opened.\n\n"
+					L"Win32 error code: %lu",
 					error
 				);
 
-				MessageBoxW(hwnd, diagnostic, L"Diagnostic Sauveteur", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+				MessageBoxW(hwnd, diagnostic, L"Application Diagnostic", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
 			}
 		}
 		else if (
@@ -317,7 +344,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 	case WM_DESTROY:
 		// Ensure the notification icon is removed if the hidden window is destroyed.
-		Shell_NotifyIcon(NIM_DELETE, &g_nid);
+		Shell_NotifyIconW(NIM_DELETE, &g_nid);
 		PostQuitMessage(0);
 		break;
 
@@ -330,11 +357,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 // Application entry point for the GUI subsystem; no console window is created.
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+	g_hInstance = hInstance;
+
 	// Register the SysLink common-control class before loading a dialog that uses it.
 	INITCOMMONCONTROLSEX icex;
 	icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
 	icex.dwICC = ICC_LINK_CLASS;
-	InitCommonControlsEx(&icex);
+
+	if (!InitCommonControlsEx(&icex)) {
+		MessageBoxW(NULL, L"Failed to initialize SysLink controls.", L"Initialization Error", MB_OK | MB_ICONERROR);
+		return 1;
+	}
 
 	// Register a dedicated window class for receiving notification-area messages.
 	const wchar_t CLASS_NAME[] = L"TrayListenerWindowClass";
@@ -343,42 +376,67 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	wc.lpfnWndProc = WndProc;
 	wc.hInstance = hInstance;
 	wc.lpszClassName = CLASS_NAME;
-	RegisterClassW(&wc);
+
+	if (!RegisterClassW(&wc)) {
+		MessageBoxW(NULL, L"Failed to register the application window class.", L"Initialization Error", MB_OK | MB_ICONERROR);
+		return 1;
+	}
 
 	// A message-only window receives messages without creating a visible top-level window.
 	HWND hwnd = CreateWindowExW(0, CLASS_NAME, L"TrayListener", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, hInstance, NULL);
 
-	if (hwnd == NULL) return 0;
+	if (hwnd == NULL) return 1;
 
 	// Configure the notification icon and its callback message.
-	g_nid.cbSize = sizeof(NOTIFYICONDATA);
+	g_nid.cbSize = sizeof(NOTIFYICONDATAW);
 	g_nid.hWnd = hwnd;
 	g_nid.uID = 1;
 	g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
 	g_nid.uCallbackMessage = WM_TRAYICON;
 
 	// Load the tray-sized icon from the executable's resources.
-	g_nid.hIcon = (HICON)LoadImage(
+	g_nid.hIcon = (HICON)LoadImageW(
 		hInstance,
-		MAKEINTRESOURCE(IDI_MY_TRAY_ICON),
+		MAKEINTRESOURCEW(IDI_MY_TRAY_ICON),
 		IMAGE_ICON,
 		GetSystemMetrics(SM_CXSMICON),
 		GetSystemMetrics(SM_CYSMICON),
 		LR_DEFAULTCOLOR
 	);
 
+	if (g_nid.hIcon == NULL) {
+		DestroyWindow(hwnd);
+		MessageBoxW(NULL, L"Failed to load the notification area icon.", L"Initialization Error", MB_OK | MB_ICONERROR);
+		return 1;
+	}
+
 	// Set the tooltip displayed when the user hovers over the notification icon.
 	wcscpy_s(g_nid.szTip, L"Sauveteur de fen\u00EAtres fant\u00F4mes");
 
 	// Register the icon with the Windows notification area.
-	Shell_NotifyIcon(NIM_ADD, &g_nid);
+	if (!Shell_NotifyIconW(NIM_ADD, &g_nid)) {
+		DestroyIcon(g_nid.hIcon);
+		DestroyWindow(hwnd);
+		MessageBoxW(NULL, L"Failed to add the notification area icon.", L"Initialization Error", MB_OK | MB_ICONERROR);
+		return 1;
+	}
+
+	// Ask Windows to send a notification if Explorer restarts.
+	g_nid.uFlags = NIF_MESSAGE;
+	g_nid.uCallbackMessage = WM_TRAYICON;
+	Shell_NotifyIconW(NIM_SETVERSION, &g_nid);
 
 	// Standard Win32 message loop for dispatching tray callbacks and window commands.
 	MSG msg;
-	while (GetMessage(&msg, NULL, 0, 0)) {
+	BOOL getMessageResult;
+
+	while ((getMessageResult = GetMessageW(&msg, NULL, 0, 0)) > 0) {
 		TranslateMessage(&msg);
-		DispatchMessage(&msg);
+		DispatchMessageW(&msg);
 	}
 
-	return 0;
+	// Release the icon handle after the notification icon has been removed.
+	DestroyIcon(g_nid.hIcon);
+
+	return getMessageResult == -1 ? 1 : (int)msg.wParam;
 }
