@@ -1,7 +1,10 @@
-#include <windows.h>
+﻿#include <windows.h>
 #include <winres.h>
 #include <commctrl.h>
 #include "resource.h"
+
+// TELL THE COMPILER THAT THIS FILE IS ENCODED IN UTF-8 (CODE PAGE 65001)
+#pragma code_page(65001)
 
 // Associe l'identifiant au fichier physique sur votre disque
 // Previous window Icon by Icojam on <a href="https://icon-icons.com/authors/59-icojam">Icon-Icons.com</a>
@@ -10,12 +13,12 @@ IDI_MY_TRAY_ICON        ICON        "previous_window_16719.ico"
 // ID de la boîte de dialogue
 IDD_ABOUT_DIALOG DIALOGEX 0, 0, 240, 110
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "A propos"
+CAPTION "À propos"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-LTEXT "Sauveteur de fenetres fantomes", IDC_STATIC, 14, 14, 212, 8
+LTEXT "Sauveteur de fenêtres fantômes", IDC_STATIC, 14, 14, 212, 8
 
-CONTROL "Depot : <a href=""https://github.com/jean-claude-segura/GetMyWindowBackSystemTray"">GitHub</a>",
+CONTROL "Dépôt : <a href=""https://github.com/jean-claude-segura/GetMyWindowBackSystemTray"">GitHub</a>",
 IDC_LINK_GITHUB, "SysLink", WS_TABSTOP | WS_VISIBLE, 14, 30, 212, 14
 
 CONTROL "Previous window Icon by Icojam on <a href=""https://icon-icons.com"">Icon-Icons.com</a>",
