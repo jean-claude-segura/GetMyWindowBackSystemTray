@@ -243,17 +243,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			if (hMenu == NULL)
 				break;
 
-			for (size_t i = 0; i < g_detectedApps.size(); ++i) {
+			size_t i = 0;
+			for (const auto & g_detectedApp : g_detectedApps) {
 				// Include both process and window names to help identify the correct target.
-				std::wstring menuText =
-					L"[" + g_detectedApps[i].processName + L"] " +
-					g_detectedApps[i].windowTitle;
+				std::wstring menuText = L"[" + g_detectedApp.processName + L"] " + g_detectedApp.windowTitle;
 
 				// Keep menu entries reasonably short to avoid excessively wide menus.
 				if (menuText.length() > 60)
 					menuText = menuText.substr(0, 57) + L"...";
 
-				AppendMenuW(hMenu, MF_STRING, ID_APP_START_RANGE + i, menuText.c_str());
+				AppendMenuW(hMenu, MF_STRING, ID_APP_START_RANGE + i++, menuText.c_str());
 			}
 
 			if (g_detectedApps.empty()) {
