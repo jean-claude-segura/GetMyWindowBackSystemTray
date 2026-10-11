@@ -4,12 +4,13 @@ name: Build GetMyWindowBackSystemTray
 on:
   push:
     branches: ["master"]
+    tags: ["v*"]
   pull_request:
     branches: ["master"]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -29,9 +30,16 @@ jobs:
           /p:Configuration=Release
           /p:Platform=x64
 
-      - name: Upload executable
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: GetMyWindowBackSystemTray-Release-x64
           path: "**/GetMyWindowBackSystemTray.exe"
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "**/GetMyWindowBackSystemTray.exe"
+          generate_release_notes: true
