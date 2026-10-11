@@ -1,3 +1,5 @@
 .vs/
 x64/
+Win32/
 GetMyWindowBackSystemTray/x64
+GetMyWindowBackSystemTray/Win32
