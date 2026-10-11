@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="GetMyWindowBackSystemTray/GetMyWindowBackSystemTray.vcxproj" Id="e0988af7-f0f0-47d7-b29e-42a2c106b42e" />
+</Solution>

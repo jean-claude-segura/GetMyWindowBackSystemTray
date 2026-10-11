@@ -1,0 +1,5 @@
+#include "resource.h"
+
+// Associe l'identifiant au fichier physique sur votre disque
+// Previous window Icon by Icojam on <a href="https://icon-icons.com/authors/59-icojam">Icon-Icons.com</a>
+IDI_MY_TRAY_ICON        ICON        "previous_window_16719.ico"
