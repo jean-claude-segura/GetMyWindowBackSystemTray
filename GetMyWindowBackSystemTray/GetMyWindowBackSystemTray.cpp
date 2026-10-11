@@ -24,6 +24,63 @@ NOTIFYICONDATA g_nid = { 0 };
 std::vector<AppWindow> g_detectedApps;
 HINSTANCE g_hInstance = NULL;
 
+// Converts an HICON handle into a 16x16 HBITMAP compatible with Win32 menus.
+HBITMAP IconToMenuBitmap(HICON hIcon) {
+	if (!hIcon) return NULL;
+
+	// Retrieve the standard dimensions for a small icon used in menus (typically 16x16).
+	int cx = GetSystemMetrics(SM_CXSMICON);
+	int cy = GetSystemMetrics(SM_CYSMICON);
+
+	HDC hdcScreen = GetDC(NULL);
+	HDC hdcMem = CreateCompatibleDC(hdcScreen);
+	HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, cx, cy);
+	HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
+
+	// Pre-fill the background with the default system menu color to blend properly.
+	RECT rc = { 0, 0, cx, cy };
+	FillRect(hdcMem, &rc, (HBRUSH)(COLOR_MENU + 1));
+
+	// Draw the icon onto the device context. DI_NORMAL preserves native icon transparency layers.
+	DrawIconEx(hdcMem, 0, 0, hIcon, cx, cy, 0, NULL, DI_NORMAL);
+
+	SelectObject(hdcMem, hOldBitmap);
+	DeleteDC(hdcMem);
+	ReleaseDC(NULL, hdcScreen);
+
+	return hBitmap;
+}
+
+// Queries the specified window handles and fallback classes to retrieve its application icon.
+HICON ObtenirIconeFenetre(HWND hwnd) {
+	HICON hIcon = NULL;
+
+	// 1. Attempt to fetch the window's specific small icon via message timeout.
+	SendMessageTimeoutW(hwnd, WM_GETICON, ICON_SMALL, 0, SMTO_ABORTIFHUNG, 100, (PDWORD_PTR)&hIcon);
+
+	// 2. Fall back to the small icon defined within the window's class registration.
+	if (!hIcon) {
+		hIcon = (HICON)GetClassLongPtrW(hwnd, GCLP_HICONSM);
+	}
+
+	// 3. Fall back to the window's large icon version if small variants are unavailable.
+	if (!hIcon) {
+		SendMessageTimeoutW(hwnd, WM_GETICON, ICON_BIG, 0, SMTO_ABORTIFHUNG, 100, (PDWORD_PTR)&hIcon);
+	}
+
+	// 4. Fall back to the large icon defined within the window's class registration.
+	if (!hIcon) {
+		hIcon = (HICON)GetClassLongPtrW(hwnd, GCLP_HICON);
+	}
+
+	// 5. Ultimate generic fallback: load the standard Windows executable icon if all else fails.
+	if (!hIcon) {
+		hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
+	}
+
+	return hIcon;
+}
+
 // Handles initialization, hyperlink activation, and dismissal of the About dialog.
 INT_PTR CALLBACK AboutDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
 	switch (message) {
@@ -243,8 +300,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			if (hMenu == NULL)
 				break;
 
+
+			std::vector<HBITMAP> menuBitmaps;
 			size_t i = 0;
-			for (const auto & g_detectedApp : g_detectedApps) {
+			for (const auto& g_detectedApp : g_detectedApps) {
 				// Include both process and window names to help identify the correct target.
 				std::wstring menuText = L"[" + g_detectedApp.processName + L"] " + g_detectedApp.windowTitle;
 
@@ -252,7 +311,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				if (menuText.length() > 60)
 					menuText = menuText.substr(0, 57) + L"...";
 
-				AppendMenuW(hMenu, MF_STRING, ID_APP_START_RANGE + i++, menuText.c_str());
+				UINT commandId = static_cast<UINT>(ID_APP_START_RANGE + i++);
+				AppendMenuW(hMenu, MF_STRING, commandId, menuText.c_str());
+
+				// Add the application's icon to the corresponding menu item.
+				HICON hIcon = ObtenirIconeFenetre(g_detectedApp.hwnd);
+				HBITMAP hBitmap = IconToMenuBitmap(hIcon);
+
+				if (hBitmap) {
+					MENUITEMINFOW mii = {};
+					mii.cbSize = sizeof(mii);
+					mii.fMask = MIIM_BITMAP;
+					mii.hbmpItem = hBitmap;
+
+					if (SetMenuItemInfoW(hMenu, commandId, FALSE, &mii))
+						menuBitmaps.push_back(hBitmap);
+					else
+						DeleteObject(hBitmap);
+				}
 			}
 
 			if (g_detectedApps.empty()) {
@@ -265,6 +341,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			TrackPopupMenu(hMenu, TPM_LEFTALIGN | TPM_BOTTOMALIGN, curPoint.x, curPoint.y, 0, hwnd, NULL);
 
 			DestroyMenu(hMenu);
+
+			for (HBITMAP hBitmap : menuBitmaps)
+				DeleteObject(hBitmap);
 		}
 		else if (lParam == WM_RBUTTONUP) {
 			POINT curPoint;
