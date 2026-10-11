@@ -1,3 +1,4 @@
+
 #include <windows.h>
 #include <shellapi.h>
 #include <psapi.h>
@@ -24,6 +25,23 @@ NOTIFYICONDATA g_nid = { 0 };
 std::vector<AppWindow> g_detectedApps;
 HINSTANCE g_hInstance = NULL;
 
+// Owns the bitmaps created for a popup menu and releases them automatically.
+struct MenuBitmapCollection {
+	std::vector<HBITMAP> bitmaps;
+
+	~MenuBitmapCollection() {
+		for (HBITMAP hBitmap : bitmaps) {
+			if (hBitmap != NULL)
+				DeleteObject(hBitmap);
+		}
+	}
+
+	MenuBitmapCollection(const MenuBitmapCollection&) = delete;
+	MenuBitmapCollection& operator=(const MenuBitmapCollection&) = delete;
+
+	MenuBitmapCollection() = default;
+};
+
 // Converts an HICON handle into a 16x16 HBITMAP compatible with Win32 menus.
 HBITMAP IconToMenuBitmap(HICON hIcon) {
 	if (!hIcon) return NULL;
@@ -32,21 +50,53 @@ HBITMAP IconToMenuBitmap(HICON hIcon) {
 	int cx = GetSystemMetrics(SM_CXSMICON);
 	int cy = GetSystemMetrics(SM_CYSMICON);
 
+	if (cx <= 0 || cy <= 0)
+		return NULL;
+
 	HDC hdcScreen = GetDC(NULL);
+
+	if (hdcScreen == NULL)
+		return NULL;
+
 	HDC hdcMem = CreateCompatibleDC(hdcScreen);
+
+	if (hdcMem == NULL) {
+		ReleaseDC(NULL, hdcScreen);
+		return NULL;
+	}
+
 	HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, cx, cy);
-	HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
+
+	if (hBitmap == NULL) {
+		DeleteDC(hdcMem);
+		ReleaseDC(NULL, hdcScreen);
+		return NULL;
+	}
+
+	HGDIOBJ hOldBitmap = SelectObject(hdcMem, hBitmap);
+
+	if (hOldBitmap == NULL || hOldBitmap == HGDI_ERROR) {
+		DeleteObject(hBitmap);
+		DeleteDC(hdcMem);
+		ReleaseDC(NULL, hdcScreen);
+		return NULL;
+	}
 
 	// Pre-fill the background with the default system menu color to blend properly.
 	RECT rc = { 0, 0, cx, cy };
-	FillRect(hdcMem, &rc, (HBRUSH)(COLOR_MENU + 1));
+	FillRect(hdcMem, &rc, GetSysColorBrush(COLOR_MENU));
 
 	// Draw the icon onto the device context. DI_NORMAL preserves native icon transparency layers.
-	DrawIconEx(hdcMem, 0, 0, hIcon, cx, cy, 0, NULL, DI_NORMAL);
+	BOOL drawResult = DrawIconEx(hdcMem, 0, 0, hIcon, cx, cy, 0, NULL, DI_NORMAL);
 
 	SelectObject(hdcMem, hOldBitmap);
 	DeleteDC(hdcMem);
 	ReleaseDC(NULL, hdcScreen);
+
+	if (!drawResult) {
+		DeleteObject(hBitmap);
+		return NULL;
+	}
 
 	return hBitmap;
 }
@@ -54,28 +104,35 @@ HBITMAP IconToMenuBitmap(HICON hIcon) {
 // Queries the specified window handles and fallback classes to retrieve its application icon.
 HICON ObtenirIconeFenetre(HWND hwnd) {
 	HICON hIcon = NULL;
+	DWORD_PTR iconResult = 0;
 
 	// 1. Attempt to fetch the window's specific small icon via message timeout.
-	SendMessageTimeoutW(hwnd, WM_GETICON, ICON_SMALL, 0, SMTO_ABORTIFHUNG, 100, (PDWORD_PTR)&hIcon);
+	if (SendMessageTimeoutW(hwnd, WM_GETICON, ICON_SMALL, 0, SMTO_ABORTIFHUNG, 100, &iconResult)) {
+		hIcon = reinterpret_cast<HICON>(iconResult);
+	}
 
 	// 2. Fall back to the small icon defined within the window's class registration.
 	if (!hIcon) {
-		hIcon = (HICON)GetClassLongPtrW(hwnd, GCLP_HICONSM);
+		hIcon = reinterpret_cast<HICON>(GetClassLongPtrW(hwnd, GCLP_HICONSM));
 	}
 
 	// 3. Fall back to the window's large icon version if small variants are unavailable.
 	if (!hIcon) {
-		SendMessageTimeoutW(hwnd, WM_GETICON, ICON_BIG, 0, SMTO_ABORTIFHUNG, 100, (PDWORD_PTR)&hIcon);
+		iconResult = 0;
+
+		if (SendMessageTimeoutW(hwnd, WM_GETICON, ICON_BIG, 0, SMTO_ABORTIFHUNG, 100, &iconResult)) {
+			hIcon = reinterpret_cast<HICON>(iconResult);
+		}
 	}
 
 	// 4. Fall back to the large icon defined within the window's class registration.
 	if (!hIcon) {
-		hIcon = (HICON)GetClassLongPtrW(hwnd, GCLP_HICON);
+		hIcon = reinterpret_cast<HICON>(GetClassLongPtrW(hwnd, GCLP_HICON));
 	}
 
 	// 5. Ultimate generic fallback: load the standard Windows executable icon if all else fails.
 	if (!hIcon) {
-		hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
+		hIcon = LoadIconW(NULL, IDI_APPLICATION);
 	}
 
 	return hIcon;
@@ -300,8 +357,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			if (hMenu == NULL)
 				break;
 
+			MenuBitmapCollection menuBitmaps;
+			menuBitmaps.bitmaps.reserve(g_detectedApps.size());
 
-			std::vector<HBITMAP> menuBitmaps;
 			size_t i = 0;
 			for (const auto& g_detectedApp : g_detectedApps) {
 				// Include both process and window names to help identify the correct target.
@@ -312,7 +370,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 					menuText = menuText.substr(0, 57) + L"...";
 
 				UINT commandId = static_cast<UINT>(ID_APP_START_RANGE + i++);
-				AppendMenuW(hMenu, MF_STRING, commandId, menuText.c_str());
+
+				if (!AppendMenuW(hMenu, MF_STRING, commandId, menuText.c_str()))
+					continue;
 
 				// Add the application's icon to the corresponding menu item.
 				HICON hIcon = ObtenirIconeFenetre(g_detectedApp.hwnd);
@@ -325,7 +385,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 					mii.hbmpItem = hBitmap;
 
 					if (SetMenuItemInfoW(hMenu, commandId, FALSE, &mii))
-						menuBitmaps.push_back(hBitmap);
+						menuBitmaps.bitmaps.push_back(hBitmap);
 					else
 						DeleteObject(hBitmap);
 				}
@@ -341,9 +401,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			TrackPopupMenu(hMenu, TPM_LEFTALIGN | TPM_BOTTOMALIGN, curPoint.x, curPoint.y, 0, hwnd, NULL);
 
 			DestroyMenu(hMenu);
-
-			for (HBITMAP hBitmap : menuBitmaps)
-				DeleteObject(hBitmap);
 		}
 		else if (lParam == WM_RBUTTONUP) {
 			POINT curPoint;
