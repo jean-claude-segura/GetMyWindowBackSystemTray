@@ -1,0 +1,37 @@
+
+name: Build GetMyWindowBackSystemTray
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Build Release x64
+        run: >
+          msbuild "GetMyWindowBackSystemTray.slnx"
+          /m
+          /p:Configuration=Release
+          /p:Platform=x64
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: GetMyWindowBackSystemTray-Release-x64
+          path: "**/GetMyWindowBackSystemTray.exe"
+          if-no-files-found: error
